@@ -42,8 +42,14 @@ class ArchiveExplorer(QWidget):
     def show_archive_contents(self, file_path):
         cmd=["7z.exe","l",file_path]
         if self.current_password: cmd.append("-p"+self.current_password)
-        result=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
-                              text=True,encoding="utf-8",errors="ignore")
+        result = subprocess.run(
+    cmd,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True,
+    encoding="utf-8",
+    errors="replace"   # 🔥 đổi từ ignore → replace
+)
         output=result.stdout
         if "Encrypted" in output and not self.current_password:
             pw, ok = QInputDialog.getText(self, "Password Required",
