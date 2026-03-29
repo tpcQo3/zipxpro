@@ -40,7 +40,7 @@ class ArchiveExplorer(QWidget):
         self.show_archive_contents(file_path)
 
     def show_archive_contents(self, file_path):
-        cmd = ["7z.exe", "l", "-sccUTF-8", file_path]  # 🔥 THÊM CÁI NÀY
+        cmd = ["7z.exe", "l", "-slt", "-sccUTF-8", file_path]
         if self.current_password: cmd.append("-p"+self.current_password)
         result = subprocess.run(
     cmd,
@@ -64,9 +64,10 @@ class ArchiveExplorer(QWidget):
         self.tree.clear()
         icon_provider = QFileIconProvider()
 
-        items_map = {}  # lưu path -> item
-
+        items_map = {}
         current = {}
+
+        archive_name = os.path.basename(self.current_archive)
 
         for line in output.splitlines():
             line = line.strip()
@@ -86,12 +87,30 @@ class ArchiveExplorer(QWidget):
                     size = current.get("size", "")
                     date = current.get("date", "")
 
+                    # 🔥 FIX 1: bỏ entry chính file archive
+                    if full_path == archive_name:
+                        current = {}
+                        continue
+
+                    # 🔥 FIX 2: bỏ path kiểu C:\...
+                    if ":" in full_path:
+                        current = {}
+                        continue
+
+                    # 🔥 FIX 3: bỏ entry rỗng
+                    if not full_path.strip():
+                        current = {}
+                        continue
+
                     parts = full_path.replace("\\", "/").split("/")
 
                     parent = self.tree
                     built_path = ""
 
                     for i, part in enumerate(parts):
+                        if not part:
+                            continue
+
                         built_path = built_path + "/" + part if built_path else part
 
                         if built_path not in items_map:
@@ -116,6 +135,8 @@ class ArchiveExplorer(QWidget):
                         parent = items_map[built_path]
 
                 current = {}
+
+        self.tree.expandAll()
 
     def add_files_to_archive(self, files):
         cmd = ["7z.exe","a",self.current_archive] + files
