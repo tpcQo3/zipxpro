@@ -40,7 +40,7 @@ class ArchiveExplorer(QWidget):
         self.show_archive_contents(file_path)
 
     def show_archive_contents(self, file_path):
-        cmd=["7z.exe","l",file_path]
+        cmd = ["7z.exe", "l", "-sccUTF-8", file_path]  # 🔥 THÊM CÁI NÀY
         if self.current_password: cmd.append("-p"+self.current_password)
         result = subprocess.run(
     cmd,
@@ -63,44 +63,59 @@ class ArchiveExplorer(QWidget):
     def parse_and_show(self, output):
         self.tree.clear()
         icon_provider = QFileIconProvider()
-        root_items = {}
-        start = False
+
+        items_map = {}  # lưu path -> item
+
+        current = {}
+
         for line in output.splitlines():
-            if line.startswith("----"):
-                if not start:
-                    start = True
-                else:
-                    break
-                continue
-            # parse theo cột cố định, giữ nguyên Unicode và khoảng trắng
-            if start and len(line) > 59:
-                date = line[0:10].strip()
-                size = line[33:45].strip()
-                attr = line[19:32].strip()
-                name = line[59:].rstrip()   # lấy nguyên tên file, không split
-                ftype = "Folder" if "D" in attr else "File"
-                parts = name.replace("\\", "/").split("/")
-                parent = self.tree
-                path = ""
-                for i, p in enumerate(parts):
-                    path = os.path.join(path, p)
-                    if i == len(parts) - 1:
-                        item = QTreeWidgetItem([p, size, date])
-                        if ftype == "Folder":
-                            item.setIcon(0, icon_provider.icon(QFileIconProvider.Folder))
-                        else:
-                            fi = QFileInfo(p)
-                            item.setIcon(0, icon_provider.icon(fi))
-                        parent.addTopLevelItem(item) if isinstance(parent, QTreeWidget) else parent.addChild(item)
-                        # lưu nguyên tên nội bộ để Delete dùng đúng
-                        item.setData(0, Qt.UserRole, name)
-                    else:
-                        if path not in root_items:
-                            folder_item = QTreeWidgetItem([p, "", ""])
-                            folder_item.setIcon(0, icon_provider.icon(QFileIconProvider.Folder))
-                            parent.addTopLevelItem(folder_item) if isinstance(parent, QTreeWidget) else parent.addChild(folder_item)
-                            root_items[path] = folder_item
-                        parent = root_items[path]
+            line = line.strip()
+
+            if line.startswith("Path = "):
+                current["path"] = line[7:]
+
+            elif line.startswith("Size = "):
+                current["size"] = line[7:]
+
+            elif line.startswith("Modified = "):
+                current["date"] = line[11:]
+
+            elif line == "":
+                if "path" in current:
+                    full_path = current.get("path", "")
+                    size = current.get("size", "")
+                    date = current.get("date", "")
+
+                    parts = full_path.replace("\\", "/").split("/")
+
+                    parent = self.tree
+                    built_path = ""
+
+                    for i, part in enumerate(parts):
+                        built_path = built_path + "/" + part if built_path else part
+
+                        if built_path not in items_map:
+                            if i == len(parts) - 1:
+                                # file
+                                item = QTreeWidgetItem([part, size, date])
+                                fi = QFileInfo(part)
+                                item.setIcon(0, icon_provider.icon(fi))
+                                item.setData(0, Qt.UserRole, full_path)
+                            else:
+                                # folder
+                                item = QTreeWidgetItem([part, "", ""])
+                                item.setIcon(0, icon_provider.icon(QFileIconProvider.Folder))
+
+                            if isinstance(parent, QTreeWidget):
+                                parent.addTopLevelItem(item)
+                            else:
+                                parent.addChild(item)
+
+                            items_map[built_path] = item
+
+                        parent = items_map[built_path]
+
+                current = {}
 
     def add_files_to_archive(self, files):
         cmd = ["7z.exe","a",self.current_archive] + files
