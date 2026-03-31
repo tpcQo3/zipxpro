@@ -41,23 +41,45 @@ class ArchiveExplorer(QWidget):
 
     def show_archive_contents(self, file_path):
         cmd = ["7z.exe", "l", "-slt", "-sccUTF-8", file_path]
-        if self.current_password: cmd.append("-p"+self.current_password)
+        if self.current_password:
+            cmd.append("-p" + self.current_password)
+
         result = subprocess.run(
-    cmd,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT,
-    text=True,
-    encoding="utf-8",
-    errors="replace"   # 🔥 đổi từ ignore → replace
-)
-        output=result.stdout
-        if "Encrypted" in output and not self.current_password:
-            pw, ok = QInputDialog.getText(self, "Password Required",
-                                          f"Archive {os.path.basename(file_path)} requires a password:",
-                                          QLineEdit.Password)
-            if not ok or not pw: return
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        output = result.stdout
+
+        # 🔐 Case 1: Password required
+        if ("Enter password" in output or "Encrypted" in output) and not self.current_password:
+            pw, ok = QInputDialog.getText(
+                self,
+                "Password Required",
+                f"Archive '{os.path.basename(file_path)}' requires a password:",
+                QLineEdit.Password
+            )
+            if not ok or not pw:
+                return
+
             self.current_password = pw
             return self.show_archive_contents(file_path)
+
+        # ❌ Case 2: Wrong password
+        if "Wrong password" in output or "Data Error" in output:
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Incorrect password. Please try again."
+            )
+            self.current_password = None
+            return self.show_archive_contents(file_path)
+
+        # ✅ Success
         self.parse_and_show(output)
 
     def parse_and_show(self, output):
