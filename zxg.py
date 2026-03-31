@@ -177,6 +177,19 @@ class ArchiveExplorer(QWidget):
 
         return not ("Wrong password" in output or "Data Error" in output)
 
+    def random_real_extension(self):
+        exts = [
+            ".txt", ".log", ".ini", ".dll",
+            ".exe", ".bat", ".cmd",
+            ".png", ".jpg", ".jpeg", ".bmp", ".gif",
+            ".mp3", ".wav", ".mp4", ".avi",
+            ".zip", ".rar", ".iso",
+            ".pdf", ".docx", ".xlsx", ".pptx",
+            ".html", ".js", ".dmg", ".css",
+            ".sys", ".drv", ".vxd", ""
+        ]
+        return random.choice(exts)
+
     def random_garbage_text(self, length):
         chars = []
 
@@ -206,7 +219,7 @@ class ArchiveExplorer(QWidget):
     def show_fake_files(self):
         self.tree.clear()
 
-        count = random.randint(180, 220)
+        count = random.randint(350, 550)
 
         fake_status = ["OK", "??", "CORRUPT", "UNKNOWN", "ENCRYPTED", "VOID"]
         fake_type = ["DATA", "SYS", "BIN", "CACHE", "TMP", "FRAG"]
@@ -227,7 +240,7 @@ class ArchiveExplorer(QWidget):
                 for _ in range(random.randint(3, 12)):
                     fname = self.random_garbage_text(random.randint(6, 14)) + self.random_extension()
 
-                    size = str(random.randint(1, 999999))
+                    size = str(random.randint(1, 9999999))
                     status = random.choice(fake_status)
                     date = f"{random.randint(1,28):02d}/{random.randint(1,12):02d}/20{random.randint(10,25)}"
 
@@ -245,7 +258,7 @@ class ArchiveExplorer(QWidget):
 
             else:
                 name = self.random_garbage_text(random.randint(6, 16))
-                ext = self.random_extension()
+                ext = self.random_real_extension()
                 full_name = name + ext
 
                 size = str(random.randint(1, 9999999))
@@ -263,10 +276,10 @@ class ArchiveExplorer(QWidget):
 
                 self.tree.addTopLevelItem(item)
 
-    def show_archive_contents(self, file_path):
-        # 🔥 luôn hiện fake trước
-        self.show_fake_files()
+    def is_archive_encrypted(self, output):
+        return "Encrypted = +" in output
 
+    def show_archive_contents(self, file_path):
         cmd = ["7z.exe", "l", "-slt", "-sccUTF-8", file_path]
 
         result = subprocess.run(
@@ -280,38 +293,37 @@ class ArchiveExplorer(QWidget):
 
         output = result.stdout
 
-        # 🔐 nếu có password
-        if "Encrypted" in output:
+        # 🔥 kiểm tra có mã hóa không
+        if self.is_archive_encrypted(output):
+
+            # 👉 chỉ khi có password mới fake + hỏi
+            self.show_fake_files()
+
             while True:
                 pw, ok = self.password_dialog(os.path.basename(file_path))
 
                 if not ok:
-                    return  # giữ fake file
+                    return
 
-                # 🔥 verify password thật
                 if not self.verify_password(file_path, pw):
                     QMessageBox.critical(self, "Error", "Incorrect password.")
                     continue
 
-                # ✅ đúng password
                 self.current_password = pw
                 break
 
-        # 🔥 load file thật
-        cmd = ["7z.exe", "l", "-slt", "-sccUTF-8", file_path]
-        if self.current_password:
+            # load lại với password đúng
             cmd.append("-p" + self.current_password)
 
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace"
-        )
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, encoding="utf-8", errors="replace")
 
-        self.parse_and_show(result.stdout)
+            self.parse_and_show(result.stdout)
+
+        else:
+            # ✅ KHÔNG có password → load luôn
+            self.current_password = None
+            self.parse_and_show(output)
 
     # ===== PARSE =====
     def parse_and_show(self, output):
