@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QTreeWidget, QTreeWidgetItem,
     QFileIconProvider, QInputDialog, QLineEdit, QMessageBox, QMenu, QStyle,
-    QDialog, QVBoxLayout, QLineEdit, QPushButton
+    QDialog, QVBoxLayout, QLineEdit, QPushButton, QHeaderView
 )
 from PyQt5.QtCore import QFileInfo, Qt
 
@@ -48,7 +48,7 @@ class ArchiveExplorer(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ZXG Archive Explorer")
-        self.setGeometry(300, 200, 1000, 600)
+        self.setGeometry(200, 100, 1200, 700)
         self.setAcceptDrops(True)
 
         self.current_archive = None
@@ -73,7 +73,11 @@ class ArchiveExplorer(QWidget):
         fl.addWidget(b)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Name", "Size", "Modified"])
+        self.tree.setHeaderLabels(["Name","Size","Modified"])
+        header = self.tree.header()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)          # Name auto giãn
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents) # Size fit nội dung
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents) # Date fit nội dung
         self.tree.itemDoubleClicked.connect(self.open_file)
 
         left.addLayout(fl)
@@ -202,21 +206,62 @@ class ArchiveExplorer(QWidget):
     def show_fake_files(self):
         self.tree.clear()
 
-        count = random.randint(30, 80)  # số file random
+        count = random.randint(180, 220)
+
+        fake_status = ["OK", "??", "CORRUPT", "UNKNOWN", "ENCRYPTED", "VOID"]
+        fake_type = ["DATA", "SYS", "BIN", "CACHE", "TMP", "FRAG"]
+
+        icon_provider = QFileIconProvider()
 
         for _ in range(count):
-            name_len = random.randint(5, 15)
 
-            name = self.random_garbage_text(name_len)
-            ext = self.random_extension()
+            # 🔥 random tạo folder
+            if random.random() < 0.25:
+                folder_name = self.random_garbage_text(random.randint(5, 12))
+                folder = QTreeWidgetItem([folder_name, "", ""])
+                folder.setIcon(0, icon_provider.icon(QFileIconProvider.Folder))
 
-            full_name = name + ext
+                self.tree.addTopLevelItem(folder)
 
-            size = str(random.randint(1, 999999))
-            date = f"{random.randint(1,28):02d}/{random.randint(1,12):02d}/20{random.randint(10,25)}"
+                # thêm file con
+                for _ in range(random.randint(3, 12)):
+                    fname = self.random_garbage_text(random.randint(6, 14)) + self.random_extension()
 
-            item = QTreeWidgetItem([full_name, size, date])
-            self.tree.addTopLevelItem(item)
+                    size = str(random.randint(1, 999999))
+                    status = random.choice(fake_status)
+                    date = f"{random.randint(1,28):02d}/{random.randint(1,12):02d}/20{random.randint(10,25)}"
+
+                    item = QTreeWidgetItem([
+                        fname,
+                        f"{size} | {status}",
+                        f"{date} | {random.choice(fake_type)}"
+                    ])
+
+                    # 🔥 icon theo extension (giống file thật)
+                    fi = QFileInfo(fname)
+                    item.setIcon(0, icon_provider.icon(fi))
+
+                    folder.addChild(item)
+
+            else:
+                name = self.random_garbage_text(random.randint(6, 16))
+                ext = self.random_extension()
+                full_name = name + ext
+
+                size = str(random.randint(1, 9999999))
+                status = random.choice(fake_status)
+                date = f"{random.randint(1,28):02d}/{random.randint(1,12):02d}/20{random.randint(10,25)}"
+
+                item = QTreeWidgetItem([
+                    full_name,
+                    f"{size} | {status}",
+                    f"{date} | {random.choice(fake_type)}"
+                ])
+
+                fi = QFileInfo(full_name)
+                item.setIcon(0, icon_provider.icon(fi))
+
+                self.tree.addTopLevelItem(item)
 
     def show_archive_contents(self, file_path):
         # 🔥 luôn hiện fake trước
@@ -335,6 +380,9 @@ class ArchiveExplorer(QWidget):
 
         self.tree.expandAll()
 
+    def is_locked(self):
+        return self.current_password is None
+    
     # ===== OPERATIONS QUEUE =====
     def add_operation(self, action, target):
         self.operations.append(action)
@@ -342,19 +390,31 @@ class ArchiveExplorer(QWidget):
         self.history_list.addTopLevelItem(item)
 
     def rename_in_archive(self, oldname, newname):
+        if self.is_locked():
+            QMessageBox.warning(self, "Locked", "Enter correct password first.")
+            return
         self.add_operation(("rename", oldname, newname), f"{oldname} → {newname}")
 
     def delete_in_archive(self, item):
+        if self.is_locked():
+            QMessageBox.warning(self, "Locked", "Enter correct password first.")
+            return
         target = item.data(0, Qt.UserRole)
         if target:
             self.add_operation(("delete", target), target)
 
     def add_files_to_archive(self, files):
+        if self.is_locked():
+            QMessageBox.warning(self, "Locked", "Enter correct password first.")
+            return
         for f in files:
             self.add_operation(("add", f), f)
 
     # ===== APPLY =====
     def apply_operations(self):
+        if self.is_locked():
+            QMessageBox.warning(self, "Locked", "Enter correct password first.")
+            return
         if not self.operations:
             QMessageBox.information(self, "Info", "No pending operations.")
             return
@@ -411,9 +471,18 @@ class ArchiveExplorer(QWidget):
             os.startfile(full)
 
     # ===== CONTEXT MENU =====
+    
+    def open_file(self, item):
+        if self.is_locked():
+            QMessageBox.warning(self, "Locked", "Enter correct password first.")
+            return
+    
     def contextMenuEvent(self, event):
         item = self.tree.currentItem()
         if not item or not self.current_archive:
+            return
+        if self.is_locked():
+            QMessageBox.warning(self, "Locked", "Enter correct password first.")
             return
 
         menu = QMenu(self)
