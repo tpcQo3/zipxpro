@@ -379,6 +379,7 @@ class ArchiveExplorer(QWidget):
                 current = {}
 
         self.tree.expandAll()
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowStaysOnTopHint)
 
     def is_locked(self):
         return self.current_password is None
@@ -539,10 +540,12 @@ class ArchiveExplorer(QWidget):
                     if self.current_archive:
                         self.add_files_to_archive([f])
                 break
+        
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    
     w = ArchiveExplorer()
     w.show()
     sys.exit(app.exec_())
