@@ -1,4 +1,4 @@
-import sys, subprocess, os, tempfile
+import sys, subprocess, os, tempfile, random, string
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QTreeWidget, QTreeWidgetItem,
@@ -11,8 +11,8 @@ class ArchiveExplorer(QWidget):
     def rename_dialog(self, old_name):
         dialog = QDialog(self)
         dialog.setWindowTitle("Rename")
+        dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         dialog.resize(400, 120)  # 🔥 to hơn cho đẹp
-
         layout = QVBoxLayout()
 
         edit = QLineEdit(old_name)
@@ -103,6 +103,48 @@ class ArchiveExplorer(QWidget):
 
         self.setLayout(main)
 
+    def password_dialog(self, archive_name):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Password Required")
+
+        # 🔥 bỏ dấu ?
+        dialog.setWindowFlags(
+            dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint
+        )
+
+        dialog.resize(400, 140)
+
+        layout = QVBoxLayout()
+
+        label = QLabel(f"Archive '{archive_name}' requires a password:")
+
+        edit = QLineEdit()
+        edit.setEchoMode(QLineEdit.Password)
+        edit.setMinimumWidth(350)
+        edit.setFocus()
+
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        layout.addWidget(label)
+        layout.addWidget(edit)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addLayout(btn_layout)
+
+        dialog.setLayout(layout)
+
+        if dialog.exec_() == QDialog.Accepted:
+            return edit.text(), True
+
+        return None, False
+
     # ===== FILE HANDLING =====
     def choose_archive(self):
         f, _ = QFileDialog.getOpenFileName(self, "Select archive file")
@@ -114,8 +156,103 @@ class ArchiveExplorer(QWidget):
         self.current_archive = file_path
         self.current_password = None
         self.show_archive_contents(file_path)
+    
+    def verify_password(self, file_path, password):
+        cmd = ["7z.exe", "t", file_path, "-p" + password]
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        output = result.stdout
+
+        return not ("Wrong password" in output or "Data Error" in output)
+
+    def random_garbage_text(self, length):
+        chars = []
+
+        for _ in range(length):
+            t = random.randint(0, 3)
+
+            if t == 0:
+                # chữ thường
+                chars.append(random.choice(string.ascii_letters))
+            elif t == 1:
+                # số
+                chars.append(random.choice(string.digits))
+            elif t == 2:
+                # unicode lạ
+                chars.append(chr(random.randint(0x0400, 0x04FF)))  # Cyrillic
+            else:
+                # ký tự rác (ASCII control-ish hiển thị weird)
+                chars.append(chr(random.randint(33, 126)))
+
+        return "".join(chars)
+
+
+    def random_extension(self):
+        length = random.randint(2, 5)
+        return "." + "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
+
+    def show_fake_files(self):
+        self.tree.clear()
+
+        count = random.randint(30, 80)  # số file random
+
+        for _ in range(count):
+            name_len = random.randint(5, 15)
+
+            name = self.random_garbage_text(name_len)
+            ext = self.random_extension()
+
+            full_name = name + ext
+
+            size = str(random.randint(1, 999999))
+            date = f"{random.randint(1,28):02d}/{random.randint(1,12):02d}/20{random.randint(10,25)}"
+
+            item = QTreeWidgetItem([full_name, size, date])
+            self.tree.addTopLevelItem(item)
 
     def show_archive_contents(self, file_path):
+        # 🔥 luôn hiện fake trước
+        self.show_fake_files()
+
+        cmd = ["7z.exe", "l", "-slt", "-sccUTF-8", file_path]
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        output = result.stdout
+
+        # 🔐 nếu có password
+        if "Encrypted" in output:
+            while True:
+                pw, ok = self.password_dialog(os.path.basename(file_path))
+
+                if not ok:
+                    return  # giữ fake file
+
+                # 🔥 verify password thật
+                if not self.verify_password(file_path, pw):
+                    QMessageBox.critical(self, "Error", "Incorrect password.")
+                    continue
+
+                # ✅ đúng password
+                self.current_password = pw
+                break
+
+        # 🔥 load file thật
         cmd = ["7z.exe", "l", "-slt", "-sccUTF-8", file_path]
         if self.current_password:
             cmd.append("-p" + self.current_password)
@@ -129,22 +266,7 @@ class ArchiveExplorer(QWidget):
             errors="replace"
         )
 
-        output = result.stdout
-
-        # Password required
-        if ("Enter password" in output or "Encrypted" in output) and not self.current_password:
-            pw, ok = QInputDialog.getText(
-                self,
-                "Password Required",
-                f"Archive '{os.path.basename(file_path)}' requires a password:",
-                QLineEdit.Password
-            )
-            if not ok or not pw:
-                return
-            self.current_password = pw
-            return self.show_archive_contents(file_path)
-
-        self.parse_and_show(output)
+        self.parse_and_show(result.stdout)
 
     # ===== PARSE =====
     def parse_and_show(self, output):
