@@ -303,13 +303,12 @@ class ArchiveExplorer(QWidget):
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
-            errors="replace",
-            timeout=10
+            errors="replace"
         )
 
         output = result.stdout.lower()
 
-        # 🔥 check chuẩn
+        # 🔥 check chuẩn (không dùng returncode)
         if "wrong password" in output or "can not open encrypted archive" in output:
             return False
 
@@ -325,8 +324,7 @@ class ArchiveExplorer(QWidget):
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
-            errors="replace",
-            timeout=10
+            errors="replace"
         )
 
         output = result.stdout.lower()
@@ -335,6 +333,8 @@ class ArchiveExplorer(QWidget):
 
 
     def show_archive_contents(self, file_path):
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
         self.current_archive = file_path
         self.current_password = None
 
@@ -344,10 +344,15 @@ class ArchiveExplorer(QWidget):
         if needs_password:
             self.show_fake_files()
 
-            while True:
+            attempts = 0
+
+            while attempts < 5:
+                attempts += 1
+
                 pw, ok = self.password_dialog(os.path.basename(file_path))
 
                 if not ok:
+                    QApplication.restoreOverrideCursor()
                     return
 
                 if not self.verify_password(file_path, pw):
@@ -357,7 +362,11 @@ class ArchiveExplorer(QWidget):
                 self.current_password = pw
                 break
 
-        # 🔥 sau khi chắc chắn password đúng → mới list
+            else:
+                QApplication.restoreOverrideCursor()
+                return
+
+        # 🔥 list thật (chỉ sau khi pass đúng)
         cmd = ["7z.exe", "l", "-slt", "-sccUTF-8", file_path]
 
         if self.current_password:
@@ -369,11 +378,12 @@ class ArchiveExplorer(QWidget):
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
-            errors="replace",
-            timeout=10
+            errors="replace"
         )
 
         self.parse_and_show(result.stdout)
+
+        QApplication.restoreOverrideCursor()
 
     # ===== PARSE =====
     def parse_and_show(self, output):
@@ -517,6 +527,10 @@ class ArchiveExplorer(QWidget):
 
     # ===== FILE OPEN =====
     def open_file(self, item):
+        if self.is_locked():
+            QMessageBox.warning(self, "Locked", "Enter correct password first.")
+            return
+
         target = item.data(0, Qt.UserRole)
         if not target:
             return
@@ -527,7 +541,7 @@ class ArchiveExplorer(QWidget):
         if self.current_password:
             cmd.append("-p" + self.current_password)
 
-        subprocess.run(cmd, timeout=10)
+        subprocess.run(cmd)
 
         full = os.path.join(tmp, target)
         if os.path.exists(full):
