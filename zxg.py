@@ -192,195 +192,68 @@ class ArchiveExplorer(QWidget):
         self.current_password = None
         self.show_archive_contents(file_path)
 
-    def random_real_extension(self):
-        exts = [
-            ".txt", ".log", ".ini", ".dll",
-            ".exe", ".bat", ".cmd",
-            ".png", ".jpg", ".jpeg", ".bmp", ".gif",
-            ".mp3", ".wav", ".mp4", ".avi",
-            ".zip", ".rar", ".iso",
-            ".pdf", ".docx", ".xlsx", ".pptx",
-            ".html", ".js", ".dmg", ".css",
-            ".sys", ".drv", ".vxd", ""
-        ]
-        return random.choice(exts)
-
-    def random_garbage_text(self, length):
-        chars = []
-
-        for _ in range(length):
-            t = random.randint(0, 3)
-
-            if t == 0:
-                # chữ thường
-                chars.append(random.choice(string.ascii_letters))
-            elif t == 1:
-                # số
-                chars.append(random.choice(string.digits))
-            elif t == 2:
-                # unicode lạ
-                chars.append(chr(random.randint(0x0400, 0x04FF)))  # Cyrillic
-            else:
-                # ký tự rác (ASCII control-ish hiển thị weird)
-                chars.append(chr(random.randint(33, 126)))
-
-        return "".join(chars)
-
-
-    def random_extension(self):
-        length = random.randint(2, 5)
-        return "." + "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
-
-    def show_fake_files(self):
-        self.tree.clear()
-
-        count = random.randint(350, 550)
-
-        fake_status = ["OK", "??", "CORRUPT", "UNKNOWN", "ENCRYPTED", "VOID"]
-        fake_type = ["DATA", "SYS", "BIN", "CACHE", "TMP", "FRAG"]
-
-        icon_provider = QFileIconProvider()
-
-        for _ in range(count):
-
-            # 🔥 random tạo folder
-            if random.random() < 0.25:
-                folder_name = self.random_garbage_text(random.randint(5, 12))
-                folder = QTreeWidgetItem([folder_name, "", ""])
-                folder.setIcon(0, icon_provider.icon(QFileIconProvider.Folder))
-
-                self.tree.addTopLevelItem(folder)
-
-                # thêm file con
-                for _ in range(random.randint(3, 12)):
-                    fname = self.random_garbage_text(random.randint(6, 14)) + self.random_extension()
-
-                    size = str(random.randint(1, 9999999))
-                    status = random.choice(fake_status)
-                    date = f"{random.randint(1,28):02d}/{random.randint(1,12):02d}/20{random.randint(10,25)}"
-
-                    item = QTreeWidgetItem([
-                        fname,
-                        f"{size} | {status}",
-                        f"{date} | {random.choice(fake_type)}"
-                    ])
-
-                    # 🔥 icon theo extension (giống file thật)
-                    fi = QFileInfo(fname)
-                    item.setIcon(0, icon_provider.icon(fi))
-
-                    folder.addChild(item)
-
-            else:
-                name = self.random_garbage_text(random.randint(6, 16))
-                ext = self.random_real_extension()
-                full_name = name + ext
-
-                size = str(random.randint(1, 9999999))
-                status = random.choice(fake_status)
-                date = f"{random.randint(1,28):02d}/{random.randint(1,12):02d}/20{random.randint(10,25)}"
-
-                item = QTreeWidgetItem([
-                    full_name,
-                    f"{size} | {status}",
-                    f"{date} | {random.choice(fake_type)}"
-                ])
-
-                fi = QFileInfo(full_name)
-                item.setIcon(0, icon_provider.icon(fi))
-
-                self.tree.addTopLevelItem(item)
-
     def is_archive_encrypted(self, output):
         return "Encrypted = +" in output
 
-    def verify_password(self, file_path, password):
-        cmd = ["7z.exe", "t", file_path, "-p" + password]
-
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace"
-        )
-
-        output = result.stdout.lower()
-
-        # 🔥 check chuẩn (không dùng returncode)
-        if "wrong password" in output or "can not open encrypted archive" in output:
+    def ensure_password(self):
+        if not self.current_archive:
+            QMessageBox.warning(self, "Error", "No archive selected.")
             return False
 
-        return True
+        if self.current_password:
+            return True
 
+        while True:
+            pw, ok = self.password_dialog(os.path.basename(self.current_archive))
 
-    def archive_requires_password(self, file_path):
-        cmd = ["7z.exe", "t", file_path]
+            if not ok:
+                return False
 
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace"
-        )
+            cmd = ["7z.exe", "t", self.current_archive, "-p" + pw]
 
-        output = result.stdout.lower()
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
 
-        return "enter password" in output
+            output = result.stdout.lower()
 
+            if "wrong password" in output:
+                QMessageBox.critical(self, "Error", "Incorrect password.")
+                continue
+
+            self.current_password = pw
+            return True
 
     def show_archive_contents(self, file_path):
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
 
         self.current_archive = file_path
         self.current_password = None
 
-        # 🔥 check password bằng 7z t
-        needs_password = self.archive_requires_password(file_path)
-
-        if needs_password:
-            self.show_fake_files()
-
-            attempts = 0
-
-            while attempts < 5:
-                attempts += 1
-
-                pw, ok = self.password_dialog(os.path.basename(file_path))
-
-                if not ok:
-                    QApplication.restoreOverrideCursor()
-                    return
-
-                if not self.verify_password(file_path, pw):
-                    QMessageBox.critical(self, "Error", "Incorrect password.")
-                    continue
-
-                self.current_password = pw
-                break
-
-            else:
-                QApplication.restoreOverrideCursor()
-                return
-
-        # 🔥 list thật (chỉ sau khi pass đúng)
         cmd = ["7z.exe", "l", "-slt", "-sccUTF-8", file_path]
 
-        if self.current_password:
-            cmd.append("-p" + self.current_password)
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=6
+            )
+        except subprocess.TimeoutExpired:
+            QMessageBox.critical(self, "Error", "Archive loading timeout.")
+            QApplication.restoreOverrideCursor()
+            return
 
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace"
-        )
-
+        # 🔥 luôn parse luôn (không check password nữa)
         self.parse_and_show(result.stdout)
 
         QApplication.restoreOverrideCursor()
@@ -463,30 +336,29 @@ class ArchiveExplorer(QWidget):
         self.history_list.addTopLevelItem(item)
 
     def rename_in_archive(self, oldname, newname):
-        if self.is_locked():
-            QMessageBox.warning(self, "Locked", "Enter correct password first.")
+        if not self.ensure_password():
             return
         self.add_operation(("rename", oldname, newname), f"{oldname} → {newname}")
 
     def delete_in_archive(self, item):
-        if self.is_locked():
-            QMessageBox.warning(self, "Locked", "Enter correct password first.")
+        if not self.ensure_password():
             return
         target = item.data(0, Qt.UserRole)
         if target:
             self.add_operation(("delete", target), target)
 
     def add_files_to_archive(self, files):
-        if self.is_locked():
-            QMessageBox.warning(self, "Locked", "Enter correct password first.")
+        if not self.ensure_password():
             return
         for f in files:
             self.add_operation(("add", f), f)
 
     # ===== APPLY =====
     def apply_operations(self):
-        if self.is_locked():
-            QMessageBox.warning(self, "Locked", "Enter correct password first.")
+        if not self.current_archive:
+            QMessageBox.warning(self, "Error", "No archive loaded.")
+            return
+        if not self.ensure_password():
             return
         if not self.operations:
             QMessageBox.information(self, "Info", "No pending operations.")
@@ -527,12 +399,12 @@ class ArchiveExplorer(QWidget):
 
     # ===== FILE OPEN =====
     def open_file(self, item):
-        if self.is_locked():
-            QMessageBox.warning(self, "Locked", "Enter correct password first.")
-            return
-
         target = item.data(0, Qt.UserRole)
         if not target:
+            return
+
+        # 🔐 yêu cầu password nếu cần
+        if not self.ensure_password():
             return
 
         tmp = tempfile.mkdtemp()
