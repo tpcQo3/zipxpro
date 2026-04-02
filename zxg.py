@@ -3,34 +3,56 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QTreeWidget, QTreeWidgetItem,
     QFileIconProvider, QInputDialog, QLineEdit, QMessageBox, QMenu, QStyle,
-    QDialog, QVBoxLayout, QLineEdit, QPushButton, QHeaderView
+    QDialog, QVBoxLayout, QLineEdit, QPushButton, QHeaderView, QProgressBar, QComboBox
 )
 from PyQt5.QtCore import QFileInfo, Qt, pyqtSignal, QThread
 
-class SevenZipThread(QThread):
-    result_ready = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)
+class SevenZipWorker(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal()
 
-    def __init__(self, cmd):
+    def __init__(self, cmd, target=None):
         super().__init__()
         self.cmd = cmd
+        self.target = target
 
     def run(self):
-        try:
-            result = subprocess.run(
-                self.cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10
-            )
-            self.result_ready.emit(result.stdout)
-        except subprocess.TimeoutExpired:
-            self.error_occurred.emit("Timeout")
-        except Exception as e:
-            self.error_occurred.emit(str(e))
+        import subprocess, os, time
+
+        process = subprocess.Popen(
+            self.cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        percent = 0
+        is_folder = self.target and os.path.isdir(self.target)
+
+        while True:
+            line = process.stdout.readline()
+            if not line:
+                break
+
+            line = line.strip()
+
+            if "%" in line:
+                try:
+                    percent = int("".join(filter(str.isdigit, line)))
+                    self.progress.emit(percent)
+                except:
+                    pass
+            elif is_folder:
+                if percent < 95:
+                    percent += 1
+                    self.progress.emit(percent)
+                    time.sleep(0.01)
+
+        process.wait()
+        self.progress.emit(100)
+        self.finished.emit()
 
 class ArchiveExplorer(QWidget):
     def rename_dialog(self, old_name):
@@ -127,11 +149,49 @@ class ArchiveExplorer(QWidget):
         right.addWidget(self.history_list)
         right.addWidget(self.apply_btn)
         right.addWidget(self.clear_btn)
+        self.progress = QProgressBar()
+        self.progress.setValue(0)
+        self.progress.setFormat("Ready")
+
+        right.addWidget(self.progress)
 
         main.addLayout(left, 3)
         main.addLayout(right, 1)
 
         self.setLayout(main)
+        
+    def run_7z_with_progress(self, cmd):
+        self.progress.setValue(0)
+        self.progress.setFormat("Processing... %p%")
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        while True:
+            line = process.stdout.readline()
+            if not line:
+                break
+
+            line = line.strip()
+
+            # 🔥 parse %
+            if "%" in line:
+                try:
+                    percent = int("".join(filter(str.isdigit, line)))
+                    self.progress.setValue(percent)
+                    QApplication.processEvents()
+                except:
+                    pass
+
+        process.wait()
+        self.progress.setValue(100)
+        self.progress.setFormat("Done")
 
     def password_dialog(self, archive_name):
         dialog = QDialog(self)
@@ -200,9 +260,29 @@ class ArchiveExplorer(QWidget):
             QMessageBox.warning(self, "Error", "No archive selected.")
             return False
 
+        # ✅ nếu đã có password → dùng luôn
         if self.current_password:
             return True
 
+        # 🔍 test xem archive có cần password không
+        test_cmd = ["7z.exe", "t", self.current_archive]
+
+        result = subprocess.run(
+            test_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        output = result.stdout.lower()
+
+        # 🟢 KHÔNG cần password
+        if "wrong password" not in output and "enter password" not in output:
+            return True
+
+        # 🔐 cần password → hỏi
         while True:
             pw, ok = self.password_dialog(os.path.basename(self.current_archive))
 
@@ -220,9 +300,9 @@ class ArchiveExplorer(QWidget):
                 errors="replace"
             )
 
-            output = result.stdout.lower()
+            out = result.stdout.lower()
 
-            if "wrong password" in output:
+            if "wrong password" in out:
                 QMessageBox.critical(self, "Error", "Incorrect password.")
                 continue
 
@@ -336,62 +416,75 @@ class ArchiveExplorer(QWidget):
         self.history_list.addTopLevelItem(item)
 
     def rename_in_archive(self, oldname, newname):
-        if not self.ensure_password():
-            return
         self.add_operation(("rename", oldname, newname), f"{oldname} → {newname}")
 
     def delete_in_archive(self, item):
-        if not self.ensure_password():
-            return
         target = item.data(0, Qt.UserRole)
         if target:
             self.add_operation(("delete", target), target)
 
     def add_files_to_archive(self, files):
-        if not self.ensure_password():
-            return
         for f in files:
             self.add_operation(("add", f), f)
+
+    def on_operation_done(self):
+        self.op_index += 1
+        self.run_next_operation()
+
+    def run_next_operation(self):
+        if self.op_index >= len(self.operations):
+            self.progress.setValue(100)
+            self.progress.setFormat("Done")
+            self.operations.clear()
+            self.history_list.clear()
+            self.show_archive_contents(self.current_archive)
+            return
+
+        op = self.operations[self.op_index]
+
+        if op[0] == "rename":
+            cmd = ["7z.exe", "rn", self.current_archive, op[1], op[2]]
+
+        elif op[0] == "delete":
+            cmd = ["7z.exe", "d", self.current_archive, op[1], "-y"]
+
+        elif op[0] == "add":
+            cmd = ["7z.exe", "a", self.current_archive, op[1], "-bsp1"]
+
+        else:
+            self.op_index += 1
+            self.run_next_operation()
+            return
+
+        if self.current_password:
+            cmd.append("-p" + self.current_password)
+
+        # 🔥 chạy thread
+        self.worker = SevenZipWorker(cmd, op[1] if len(op) > 1 else None)
+
+        self.worker.progress.connect(self.progress.setValue)
+        self.worker.finished.connect(self.on_operation_done)
+
+        self.worker.start()
 
     # ===== APPLY =====
     def apply_operations(self):
         if not self.current_archive:
             QMessageBox.warning(self, "Error", "No archive loaded.")
             return
-        if not self.ensure_password():
-            return
+
         if not self.operations:
             QMessageBox.information(self, "Info", "No pending operations.")
             return
 
-        reply = QMessageBox.question(
-            self,
-            "Confirm",
-            "Apply all pending operations?",
-            QMessageBox.Yes | QMessageBox.No
-        )
-
-        if reply != QMessageBox.Yes:
+        if not self.ensure_password():
             return
 
-        for op in self.operations:
-            if op[0] == "rename":
-                cmd = ["7z.exe", "rn", self.current_archive, op[1], op[2]]
-            elif op[0] == "delete":
-                cmd = ["7z.exe", "d", self.current_archive, op[1], "-y"]
-            elif op[0] == "add":
-                cmd = ["7z.exe", "a", self.current_archive, op[1]]
-            else:
-                continue
+        self.progress.setValue(0)
+        self.progress.setFormat("Processing... %p%")
 
-            if self.current_password:
-                cmd.append("-p" + self.current_password)
-
-            subprocess.run(cmd, timeout=10)
-
-        self.operations.clear()
-        self.history_list.clear()
-        self.show_archive_contents(self.current_archive)
+        self.op_index = 0
+        self.run_next_operation()
 
     def clear_operations(self):
         self.operations.clear()
@@ -403,35 +496,40 @@ class ArchiveExplorer(QWidget):
         if not target:
             return
 
-        # 🔐 yêu cầu password nếu cần
+        # 🔐 yêu cầu password
         if not self.ensure_password():
             return
 
         tmp = tempfile.mkdtemp()
-        cmd = ["7z.exe", "x", self.current_archive, target, "-o" + tmp]
+
+        cmd = ["7z.exe", "x", self.current_archive, target, "-o" + tmp, "-y"]
 
         if self.current_password:
             cmd.append("-p" + self.current_password)
 
-        subprocess.run(cmd)
+        # 🔥 KHÔNG đọc stdout → tránh deadlock
+        process = subprocess.Popen(cmd)
 
-        full = os.path.join(tmp, target)
-        if os.path.exists(full):
-            os.startfile(full)
+        # 🔥 dùng timer check thay vì block
+        from PyQt5.QtCore import QTimer
+
+        def check_done():
+            if process.poll() is not None:
+                timer.stop()
+
+                full = os.path.join(tmp, target)
+                if os.path.exists(full):
+                    os.startfile(full)
+
+        timer = QTimer(self)
+        timer.timeout.connect(check_done)
+        timer.start(300)
 
     # ===== CONTEXT MENU =====
-    
-    def open_file(self, item):
-        if self.is_locked():
-            QMessageBox.warning(self, "Locked", "Enter correct password first.")
-            return
     
     def contextMenuEvent(self, event):
         item = self.tree.currentItem()
         if not item or not self.current_archive:
-            return
-        if self.is_locked():
-            QMessageBox.warning(self, "Locked", "Enter correct password first.")
             return
 
         menu = QMenu(self)
@@ -441,6 +539,7 @@ class ArchiveExplorer(QWidget):
         paste_action = menu.addAction("Paste")
         rename_action = menu.addAction("Rename")
         delete_action = menu.addAction("Delete")
+        prop_action = menu.addAction("Properties")
 
         action = menu.exec_(self.mapToGlobal(event.pos()))
 
@@ -453,6 +552,9 @@ class ArchiveExplorer(QWidget):
         elif action == paste_action:
             if self.clipboard_item:
                 self.add_files_to_archive([self.clipboard_item])
+                
+        elif action == prop_action:
+            self.show_properties(item)
 
         elif action == rename_action:
             
@@ -471,6 +573,26 @@ class ArchiveExplorer(QWidget):
 
         elif action == delete_action:
             self.delete_in_archive(item)
+            
+    def show_properties(self, item):
+        name = item.text(0)
+        size = item.text(1)
+        date = item.text(2)
+
+        full_path = item.data(0, Qt.UserRole)
+
+        info = f"""
+📄 Name: {name}
+📂 Path: {full_path}
+
+📦 Size: {size}
+🕒 Modified: {date}
+
+🗂 Archive: {self.current_archive}
+🔒 Encrypted: {"Yes" if self.current_password else "Locked"}
+"""
+
+        QMessageBox.information(self, "Properties", info)
 
     # ===== DRAG DROP =====
     def dragEnterEvent(self, event):
