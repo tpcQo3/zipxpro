@@ -5,7 +5,32 @@ from PyQt5.QtWidgets import (
     QFileIconProvider, QInputDialog, QLineEdit, QMessageBox, QMenu, QStyle,
     QDialog, QVBoxLayout, QLineEdit, QPushButton, QHeaderView
 )
-from PyQt5.QtCore import QFileInfo, Qt
+from PyQt5.QtCore import QFileInfo, Qt, pyqtSignal, QThread
+
+class SevenZipThread(QThread):
+    result_ready = pyqtSignal(str)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, cmd):
+        super().__init__()
+        self.cmd = cmd
+
+    def run(self):
+        try:
+            result = subprocess.run(
+                self.cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10
+            )
+            self.result_ready.emit(result.stdout)
+        except subprocess.TimeoutExpired:
+            self.error_occurred.emit("Timeout")
+        except Exception as e:
+            self.error_occurred.emit(str(e))
 
 class ArchiveExplorer(QWidget):
     def rename_dialog(self, old_name):
@@ -54,6 +79,7 @@ class ArchiveExplorer(QWidget):
         self.current_archive = None
         self.current_password = None
         self.clipboard_item = None
+        self.loading = False
 
         # 🔥 Pending operations
         self.operations = []
@@ -65,12 +91,12 @@ class ArchiveExplorer(QWidget):
 
         fl = QHBoxLayout()
         self.file_label = QLabel("No archive selected")
-        b = QPushButton("Browse")
-        b.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
-        b.setFixedWidth(120)  # chỉnh tuỳ bạn
-        b.clicked.connect(self.choose_archive)
+        self.browse_btn = QPushButton("Browse")
+        self.browse_btn.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        self.browse_btn.setFixedWidth(120)  # chỉnh tuỳ bạn
+        self.browse_btn.clicked.connect(self.on_browse_click)
         fl.addWidget(self.file_label)
-        fl.addWidget(b)
+        fl.addWidget(self.browse_btn)
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Name","Size","Modified"])
@@ -150,32 +176,21 @@ class ArchiveExplorer(QWidget):
         return None, False
 
     # ===== FILE HANDLING =====
-    def choose_archive(self):
+    def on_browse_click(self):
+        if self.loading:
+            return
         f, _ = QFileDialog.getOpenFileName(self, "Select archive file")
         if f:
             self.open_archive(f)
+
+    def choose_archive(self):
+        self.on_browse_click()
 
     def open_archive(self, file_path):
         self.file_label.setText(file_path)
         self.current_archive = file_path
         self.current_password = None
         self.show_archive_contents(file_path)
-    
-    def verify_password(self, file_path, password):
-        cmd = ["7z.exe", "t", file_path, "-p" + password]
-
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace"
-        )
-
-        output = result.stdout
-
-        return not ("Wrong password" in output or "Data Error" in output)
 
     def random_real_extension(self):
         exts = [
@@ -279,8 +294,8 @@ class ArchiveExplorer(QWidget):
     def is_archive_encrypted(self, output):
         return "Encrypted = +" in output
 
-    def show_archive_contents(self, file_path):
-        cmd = ["7z.exe", "l", "-slt", "-sccUTF-8", file_path]
+    def verify_password(self, file_path, password):
+        cmd = ["7z.exe", "t", file_path, "-p" + password]
 
         result = subprocess.run(
             cmd,
@@ -288,15 +303,45 @@ class ArchiveExplorer(QWidget):
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
-            errors="replace"
+            errors="replace",
+            timeout=10
         )
 
-        output = result.stdout
+        output = result.stdout.lower()
 
-        # 🔥 kiểm tra có mã hóa không
-        if self.is_archive_encrypted(output):
+        # 🔥 check chuẩn
+        if "wrong password" in output or "can not open encrypted archive" in output:
+            return False
 
-            # 👉 chỉ khi có password mới fake + hỏi
+        return True
+
+
+    def archive_requires_password(self, file_path):
+        cmd = ["7z.exe", "t", file_path]
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10
+        )
+
+        output = result.stdout.lower()
+
+        return "enter password" in output
+
+
+    def show_archive_contents(self, file_path):
+        self.current_archive = file_path
+        self.current_password = None
+
+        # 🔥 check password bằng 7z t
+        needs_password = self.archive_requires_password(file_path)
+
+        if needs_password:
             self.show_fake_files()
 
             while True:
@@ -312,18 +357,23 @@ class ArchiveExplorer(QWidget):
                 self.current_password = pw
                 break
 
-            # load lại với password đúng
+        # 🔥 sau khi chắc chắn password đúng → mới list
+        cmd = ["7z.exe", "l", "-slt", "-sccUTF-8", file_path]
+
+        if self.current_password:
             cmd.append("-p" + self.current_password)
 
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10
+        )
 
-            self.parse_and_show(result.stdout)
-
-        else:
-            # ✅ KHÔNG có password → load luôn
-            self.current_password = None
-            self.parse_and_show(output)
+        self.parse_and_show(result.stdout)
 
     # ===== PARSE =====
     def parse_and_show(self, output):
@@ -455,7 +505,7 @@ class ArchiveExplorer(QWidget):
             if self.current_password:
                 cmd.append("-p" + self.current_password)
 
-            subprocess.run(cmd)
+            subprocess.run(cmd, timeout=10)
 
         self.operations.clear()
         self.history_list.clear()
@@ -477,7 +527,7 @@ class ArchiveExplorer(QWidget):
         if self.current_password:
             cmd.append("-p" + self.current_password)
 
-        subprocess.run(cmd)
+        subprocess.run(cmd, timeout=10)
 
         full = os.path.join(tmp, target)
         if os.path.exists(full):
